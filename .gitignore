@@ -1,0 +1,7 @@
+sources.json.bak
+
+**/.claude/settings.local.json
+
+.envrc.private
+/.direnv
+/result

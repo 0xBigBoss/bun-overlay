@@ -1,0 +1,21 @@
+name: update-sources
+on:
+  schedule:
+    - cron: "0 */12 * * *"
+  workflow_dispatch:
+jobs:
+  update-sources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - run: ./update
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: "git config user.email 0xbigboss@users.noreply.github.com"
+      - run: "git config user.name bun-overlay"
+      - run: "git add -A"
+      - run: "git commit -m 'update sources.json' | true"
+      - run: "git push -u origin main"

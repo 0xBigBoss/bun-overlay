@@ -1,0 +1,191 @@
+#!/usr/bin/env nix-shell
+#! nix-shell -p curl jq gh gnupg -i sh
+# shellcheck shell=bash
+set -eo pipefail
+
+# Script to update the sources.json file with the latest Bun releases
+# This supports both latest releases and (optionally) canary builds
+
+# Default to latest if not specified
+RELEASE_TYPE=${1:-latest}
+
+# GitHub API endpoint for releases
+if [[ "$RELEASE_TYPE" == "latest" ]]; then
+  RELEASES_URL="https://api.github.com/repos/oven-sh/bun/releases/latest"
+elif [[ "$RELEASE_TYPE" == "canary" ]]; then
+  # For canary, we use the tag "canary"
+  RELEASES_URL="https://api.github.com/repos/oven-sh/bun/releases/tags/canary"
+else
+  # For specific versions, use the provided version
+  RELEASES_URL="https://api.github.com/repos/oven-sh/bun/releases/tags/bun-v$RELEASE_TYPE"
+fi
+
+# Platforms we support
+PLATFORMS=(
+  "aarch64-darwin"
+  "aarch64-linux"
+  "x86_64-darwin"
+  "x86_64-linux"
+  "x86_64-linux-baseline" # For systems without AVX2 support
+)
+
+# Mapping from our platform names to Bun's archive naming
+get_platform_name() {
+  local platform=$1
+  case "$platform" in
+  "aarch64-darwin") echo "darwin-aarch64" ;;
+  "aarch64-linux") echo "linux-aarch64" ;;
+  "x86_64-darwin") echo "darwin-x64" ;;
+  "x86_64-linux") echo "linux-x64" ;;
+  "x86_64-linux-baseline") echo "linux-x64-baseline" ;;
+  *) echo "unknown" ;;
+  esac
+}
+
+# Check required tools
+for cmd in curl jq nix-prefetch-url nix-hash gh gpg; do
+  if ! command -v $cmd &>/dev/null; then
+    echo "Error: Required command '$cmd' not found"
+    exit 1
+  fi
+done
+
+# Get release info from GitHub
+echo "Fetching $RELEASE_TYPE release information..."
+RELEASE_INFO=$(curl -s "$RELEASES_URL")
+
+# Get version/tag info
+TAG=$(echo "$RELEASE_INFO" | jq -r '.tag_name')
+if [[ "$TAG" == "null" ]]; then
+  echo "Error: Could not get tag information"
+  exit 1
+fi
+
+# Extract the version number
+if [[ "$RELEASE_TYPE" == "latest" || "$RELEASE_TYPE" == "canary" ]]; then
+  if [[ "$TAG" == bun-v* ]]; then
+    VERSION=$(echo "$TAG" | sed 's/bun-v//')
+  else
+    VERSION="$RELEASE_TYPE"
+  fi
+else
+  VERSION="$RELEASE_TYPE"
+fi
+
+echo "Processing $RELEASE_TYPE release: $TAG (version: $VERSION)"
+
+# The base URL for downloading the archives
+BASE_URL="https://github.com/oven-sh/bun/releases/download/$TAG"
+
+# Create a temporary file for our updated JSON
+TMP_JSON=$(mktemp)
+
+# Create a temporary directory to hold platform data files
+TMP_DIR=$(mktemp -d)
+
+# Create a temporary directory for verification
+VERIFY_DIR=$(mktemp -d)
+
+# Set up GPG for signature verification
+GNUPGHOME=$(mktemp -d)
+export GNUPGHOME
+BUN_GPG_KEY="F3DCC08A8572C0749B3E18888EAB4D40A7B22B59"
+
+# Import the Bun GPG key
+echo "Importing Bun GPG key..."
+gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys "$BUN_GPG_KEY" \
+  || gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "$BUN_GPG_KEY"
+
+# Download the SHASUMS256.txt.asc file
+echo "Downloading SHASUMS256.txt.asc..."
+SHASUMS_ASC_URL="$BASE_URL/SHASUMS256.txt.asc"
+SHASUMS_ASC_FILE="$VERIFY_DIR/SHASUMS256.txt.asc"
+curl -L -o "$SHASUMS_ASC_FILE" "$SHASUMS_ASC_URL"
+
+# Compute the hash for SHASUMS256.txt.asc
+echo "Computing hash for SHASUMS256.txt.asc..."
+SHASUMS_HASH=$(nix-prefetch-url --type sha256 "$SHASUMS_ASC_URL" 2>/dev/null)
+
+# Verify and decrypt the signature
+echo "Verifying SHASUMS256.txt.asc signature..."
+gpg --batch --decrypt --output "$VERIFY_DIR/SHASUMS256.txt" "$SHASUMS_ASC_FILE"
+
+# Create JSON objects for each platform
+for platform in "${PLATFORMS[@]}"; do
+  platform_name=$(get_platform_name "$platform")
+  url="$BASE_URL/bun-${platform_name}.zip"
+  zip_file="$VERIFY_DIR/bun-${platform_name}.zip"
+
+  echo "Downloading and verifying: $platform..."
+
+  # Download the zip file
+  echo "Downloading: $url"
+  curl -L -o "$zip_file" "$url"
+
+  # Verify checksum against SHASUMS256.txt
+  echo "Verifying checksum for $platform..."
+  (cd "$VERIFY_DIR" && grep " bun-${platform_name}.zip$" SHASUMS256.txt | sha256sum -c -)
+  
+  # If verification succeeded, compute Nix hash
+  echo "Computing Nix hash for $platform..."
+  hash=$(nix-hash --type sha256 --flat --base32 "$zip_file")
+
+  # Store in temp file
+  jq -n \
+    --arg url "$url" \
+    --arg hash "$hash" \
+    '{ "url": $url, "sha256": $hash }' >"$TMP_DIR/$platform.json"
+done
+
+# Build our JSON using jq
+jq -n \
+  --arg version "$VERSION" \
+  --arg tag "$TAG" \
+  --arg shasums_hash "$SHASUMS_HASH" \
+  --argjson platforms "$(
+    jq -n \
+      --argjson aarch64_darwin "$(cat "$TMP_DIR/aarch64-darwin.json")" \
+      --argjson aarch64_linux "$(cat "$TMP_DIR/aarch64-linux.json")" \
+      --argjson x86_64_darwin "$(cat "$TMP_DIR/x86_64-darwin.json")" \
+      --argjson x86_64_linux "$(cat "$TMP_DIR/x86_64-linux.json")" \
+      --argjson x86_64_linux_baseline "$(cat "$TMP_DIR/x86_64-linux-baseline.json")" \
+      '{
+        "aarch64-darwin": $aarch64_darwin,
+        "aarch64-linux": $aarch64_linux,
+        "x86_64-darwin": $x86_64_darwin,
+        "x86_64-linux": $x86_64_linux,
+        "x86_64-linux-baseline": $x86_64_linux_baseline
+      }'
+  )" \
+  '{
+    ($version): {
+      "version": $version,
+      "tag": $tag,
+      "shasums_hash": $shasums_hash,
+      "platforms": $platforms
+    }
+  }' >"$TMP_JSON"
+
+# Check if we need to merge with existing sources.json or create a new one
+if [[ -f sources.json ]]; then
+  echo "Merging with existing sources.json..."
+
+  # Create a backup of the current sources.json
+  cp sources.json sources.json.bak
+
+  # Merge the new JSON with the existing one
+  jq -s '.[0] * .[1]' sources.json "$TMP_JSON" >sources.json.new
+  mv sources.json.new sources.json
+else
+  echo "Creating new sources.json..."
+  mv "$TMP_JSON" sources.json
+fi
+
+# Clean up
+rm -f "$TMP_JSON"
+rm -rf "$TMP_DIR"
+rm -rf "$VERIFY_DIR"
+rm -rf "$GNUPGHOME"
+
+echo "Update completed successfully!"
+echo "Updated $RELEASE_TYPE to version $VERSION in sources.json with signature verification"
