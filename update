@@ -138,33 +138,71 @@ for platform in "${PLATFORMS[@]}"; do
 done
 
 # Build our JSON using jq
-jq -n \
-  --arg version "$VERSION" \
-  --arg tag "$TAG" \
-  --arg shasums_hash "$SHASUMS_HASH" \
-  --argjson platforms "$(
-    jq -n \
-      --argjson aarch64_darwin "$(cat "$TMP_DIR/aarch64-darwin.json")" \
-      --argjson aarch64_linux "$(cat "$TMP_DIR/aarch64-linux.json")" \
-      --argjson x86_64_darwin "$(cat "$TMP_DIR/x86_64-darwin.json")" \
-      --argjson x86_64_linux "$(cat "$TMP_DIR/x86_64-linux.json")" \
-      --argjson x86_64_linux_baseline "$(cat "$TMP_DIR/x86_64-linux-baseline.json")" \
-      '{
-        "aarch64-darwin": $aarch64_darwin,
-        "aarch64-linux": $aarch64_linux,
-        "x86_64-darwin": $x86_64_darwin,
-        "x86_64-linux": $x86_64_linux,
-        "x86_64-linux-baseline": $x86_64_linux_baseline
-      }'
-  )" \
-  '{
-    ($version): {
-      "version": $version,
-      "tag": $tag,
-      "shasums_hash": $shasums_hash,
-      "platforms": $platforms
-    }
-  }' >"$TMP_JSON"
+# For latest release, we need to update both "latest" and the version-specific key
+if [[ "$RELEASE_TYPE" == "latest" ]]; then
+  jq -n \
+    --arg version "$VERSION" \
+    --arg tag "$TAG" \
+    --arg shasums_hash "$SHASUMS_HASH" \
+    --argjson platforms "$(
+      jq -n \
+        --argjson aarch64_darwin "$(cat "$TMP_DIR/aarch64-darwin.json")" \
+        --argjson aarch64_linux "$(cat "$TMP_DIR/aarch64-linux.json")" \
+        --argjson x86_64_darwin "$(cat "$TMP_DIR/x86_64-darwin.json")" \
+        --argjson x86_64_linux "$(cat "$TMP_DIR/x86_64-linux.json")" \
+        --argjson x86_64_linux_baseline "$(cat "$TMP_DIR/x86_64-linux-baseline.json")" \
+        '{
+          "aarch64-darwin": $aarch64_darwin,
+          "aarch64-linux": $aarch64_linux,
+          "x86_64-darwin": $x86_64_darwin,
+          "x86_64-linux": $x86_64_linux,
+          "x86_64-linux-baseline": $x86_64_linux_baseline
+        }'
+    )" \
+    '{
+      "latest": {
+        "version": $version,
+        "tag": $tag,
+        "shasums_hash": $shasums_hash,
+        "platforms": $platforms
+      },
+      ($version): {
+        "version": $version,
+        "tag": $tag,
+        "shasums_hash": $shasums_hash,
+        "platforms": $platforms
+      }
+    }' >"$TMP_JSON"
+else
+  # For canary and specific versions, just use the version as the key
+  jq -n \
+    --arg version "$VERSION" \
+    --arg tag "$TAG" \
+    --arg shasums_hash "$SHASUMS_HASH" \
+    --argjson platforms "$(
+      jq -n \
+        --argjson aarch64_darwin "$(cat "$TMP_DIR/aarch64-darwin.json")" \
+        --argjson aarch64_linux "$(cat "$TMP_DIR/aarch64-linux.json")" \
+        --argjson x86_64_darwin "$(cat "$TMP_DIR/x86_64-darwin.json")" \
+        --argjson x86_64_linux "$(cat "$TMP_DIR/x86_64-linux.json")" \
+        --argjson x86_64_linux_baseline "$(cat "$TMP_DIR/x86_64-linux-baseline.json")" \
+        '{
+          "aarch64-darwin": $aarch64_darwin,
+          "aarch64-linux": $aarch64_linux,
+          "x86_64-darwin": $x86_64_darwin,
+          "x86_64-linux": $x86_64_linux,
+          "x86_64-linux-baseline": $x86_64_linux_baseline
+        }'
+    )" \
+    '{
+      ($version): {
+        "version": $version,
+        "tag": $tag,
+        "shasums_hash": $shasums_hash,
+        "platforms": $platforms
+      }
+    }' >"$TMP_JSON"
+fi
 
 # Check if we need to merge with existing sources.json or create a new one
 if [[ -f sources.json ]]; then
