@@ -86,26 +86,32 @@
       dontPatch = true;
       dontConfigure = true;
 
+      # Override unpack phase to handle multiple directories in zip
+      unpackPhase = ''
+        runHook preUnpack
+        mkdir -p source
+        cd source
+        ${pkgs.unzip}/bin/unzip -q $src
+        runHook postUnpack
+      '';
+
       # Extract the archive and install files
       installPhase = ''
-        # Just copy the source archive for reference
-        cp $src ./${platformFilename}
-
-        # Now extract and install the binary
+        runHook preInstall
+        
+        # Install the binary
         mkdir -p $out/bin
 
-        # Create a temp directory and extract the zip archive
-        mkdir -p ./temp
-        ${pkgs.unzip}/bin/unzip $src -d ./temp
-
-        # Find and move the bun binary
-        find ./temp -type f -name "bun" -exec cp {} $out/bin/bun \;
+        # Find and move the bun binary (it's now in a subdirectory)
+        find . -type f -name "bun" -not -path "./__MACOSX/*" -exec cp {} $out/bin/bun \;
 
         # Make sure it's executable
         chmod +x $out/bin/bun
 
         # Create symlinks for bun subcommands
         ln -s $out/bin/bun $out/bin/bunx
+        
+        runHook postInstall
       '';
 
       meta = {
