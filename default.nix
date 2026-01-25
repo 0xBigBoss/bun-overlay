@@ -70,6 +70,7 @@
       nativeBuildInputs =
         (lib.optionals pkgs.stdenv.isLinux [
           pkgs.autoPatchelfHook
+          pkgs.makeBinaryWrapper
         ])
         ++ [
           pkgs.unzip
@@ -112,6 +113,11 @@
         ln -s $out/bin/bun $out/bin/bunx
         
         runHook postInstall
+      '';
+
+      postFixup = lib.optionalString pkgs.stdenv.isLinux ''
+        wrapProgram $out/bin/bun \
+          --prefix LD_LIBRARY_PATH : "${pkgs.stdenv.cc.cc.lib}/lib"
       '';
 
       meta = {
