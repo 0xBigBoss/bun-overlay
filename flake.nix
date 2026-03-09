@@ -65,8 +65,8 @@
     // {
       # Overlay that can be imported so you can access the packages
       overlays.default = final: prev: {
-        bunPackages = outputs.packages.${prev.system};
-        bun = outputs.packages.${prev.system}.bun;
+        bunPackages = outputs.packages.${prev.stdenv.hostPlatform.system};
+        bun = outputs.packages.${prev.stdenv.hostPlatform.system}.bun;
       };
 
       templates.init = {
